@@ -1,4 +1,8 @@
+
 """Sincronización periódica de precios."""
+
+import logging
+import math
 
 from database.db import transaccion
 from services.auth_service import requiere_rol
@@ -12,29 +16,45 @@ def sincronizar_precios(conn, usuario, lista_precios):
     """
     Actualiza los precios recibidos desde el servidor central.
 
-    lista_precios:
-    [
-        {"codigo_barras": "750100", "precio": 25.50},
-        {"codigo_barras": "750200", "precio": 18.00}
-    ]
-
     Retorna la cantidad de productos actualizados.
     """
+
     requiere_rol(usuario, "administrador")
 
-    if not lista_precios:
+    if not isinstance(lista_precios, list) or not lista_precios:
         raise SyncError("No se recibieron precios para sincronizar.")
 
     codigos = set()
+    precios_validados = []
 
-    for elemento in lista_precios:
-        codigo = str(elemento["codigo_barras"]).strip()
-        precio = float(elemento["precio"])
+    # Validar todos los datos antes de modificar la base de datos.
+    for numero, elemento in enumerate(lista_precios, start=1):
+
+        if not isinstance(elemento, dict):
+            raise SyncError(
+                f"Registro inválido en la posición {numero}."
+            )
+
+        if "codigo_barras" not in elemento or "precio" not in elemento:
+            raise SyncError(
+                f"Faltan datos en el registro {numero}."
+            )
+
+        codigo = str(elemento["codigo_barras"] or "").strip()
 
         if not codigo:
-            raise SyncError("Se recibió un código de barras vacío.")
+            raise SyncError(
+                f"El código de barras del registro {numero} está vacío."
+            )
 
-        if precio < 0:
+        try:
+            precio = float(elemento["precio"])
+        except (ValueError, TypeError, OverflowError):
+            raise SyncError(
+                f"El precio del producto {codigo} no es válido."
+            )
+
+        if not math.isfinite(precio) or precio < 0:
             raise SyncError(
                 f"El precio del producto {codigo} es inválido."
             )
@@ -45,13 +65,14 @@ def sincronizar_precios(conn, usuario, lista_precios):
             )
 
         codigos.add(codigo)
+        precios_validados.append((codigo, precio))
 
     actualizados = 0
 
+    # Todos los cambios se realizan en una sola transacción.
     with transaccion(conn):
-        for elemento in lista_precios:
-            codigo = str(elemento["codigo_barras"]).strip()
-            precio = float(elemento["precio"])
+
+        for codigo, precio in precios_validados:
 
             resultado = conn.execute(
                 """
@@ -77,30 +98,54 @@ def iniciar_sincronizacion(obtener_precios, obtener_conexion,
     """
     Programa la sincronización automática cada hora.
 
-    obtener_precios: función que consulta el servidor central.
-    obtener_conexion: función que devuelve una conexión SQLite nueva.
-    obtener_usuario: función que devuelve un usuario administrador.
+    obtener_precios: consulta el servidor central.
+    obtener_conexion: devuelve una conexión SQLite nueva.
+    obtener_usuario: devuelve un usuario administrador.
     """
+
     from apscheduler.schedulers.background import BackgroundScheduler
 
     def tarea():
-        conn = obtener_conexion()
+        conn = None
 
         try:
+            conn = obtener_conexion()
+
             precios = obtener_precios()
             usuario = obtener_usuario()
-            sincronizar_precios(conn, usuario, precios)
+
+            cantidad = sincronizar_precios(
+                conn,
+                usuario,
+                precios
+            )
+
+            logging.info(
+                "Sincronización completada. Productos actualizados: %s",
+                cantidad
+            )
+
+        except Exception:
+            logging.exception(
+                "Ocurrió un error durante la sincronización de precios."
+            )
+
         finally:
-            conn.close()
+            if conn is not None:
+                conn.close()
 
     scheduler = BackgroundScheduler()
+
     scheduler.add_job(
         tarea,
         trigger="interval",
         hours=1,
         id="sincronizacion_precios",
-        replace_existing=True
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True
     )
 
     scheduler.start()
+
     return scheduler
