@@ -5,6 +5,8 @@ import os
 import sqlite3
 import logging
 
+from contextlib import closing
+
 from datetime import datetime
 
 
@@ -12,61 +14,56 @@ class BackupError(Exception):
     """Error durante la generación del respaldo."""
 
 
-def generar_respaldo(ruta_bd="tienda.db", carpeta_destino="backups"):
-    """
-    Genera una copia de seguridad de la base de datos.
 
-    El archivo se identifica con la fecha y hora de creación.
-    Retorna la ruta del respaldo generado.
-    """
+def generar_respaldo(ruta_bd="tienda.db", carpeta_destino="backups"):
+    """Genera una copia de seguridad de la base de datos."""
 
     if not os.path.isfile(ruta_bd):
-        raise BackupError("No se encontró la base de datos.")
+        raise BackupError(f"No existe la base de datos: {ruta_bd}")
+
+    os.makedirs(carpeta_destino, exist_ok=True)
+
+    fecha = datetime.now().strftime("%Y%m%d_%H%M%S")
+    nombre_respaldo = f"respaldo_{fecha}.db"
+    ruta_respaldo = os.path.join(carpeta_destino, nombre_respaldo)
+
+    origen = None
+    destino = None
 
     try:
-        os.makedirs(carpeta_destino, exist_ok=True)
-    except OSError as error:
-        raise BackupError(
-            f"No se pudo crear la carpeta de respaldos: {error}"
-        )
+        origen = sqlite3.connect(ruta_bd)
+        destino = sqlite3.connect(ruta_respaldo)
 
-    fecha = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    nombre_archivo = f"respaldo_{fecha}.db"
-    ruta_respaldo = os.path.join(carpeta_destino, nombre_archivo)
+        # Copiar la base de datos
+        origen.backup(destino)
 
-    try:
-        with sqlite3.connect(ruta_bd) as origen:
-            with sqlite3.connect(ruta_respaldo) as destino:
-                origen.backup(destino)
+        # Verificar la integridad antes de cerrar la conexión
+        resultado = destino.execute(
+            "PRAGMA integrity_check"
+        ).fetchone()
 
-                resultado = destino.execute(
-                    "PRAGMA integrity_check"
-                ).fetchone()
-
-                if not resultado or resultado[0] != "ok":
-                    raise BackupError(
-                        "El respaldo generado no superó la verificación."
-                    )
+        if resultado is None or resultado[0] != "ok":
+            raise sqlite3.DatabaseError(
+                "El respaldo no superó la verificación de integridad."
+            )
 
         return ruta_respaldo
 
-    except (sqlite3.Error, OSError, BackupError) as error:
-
+    except sqlite3.Error as e:
         if os.path.exists(ruta_respaldo):
-            try:
-                os.remove(ruta_respaldo)
-            except OSError:
-                logging.exception(
-                    "No se pudo eliminar el respaldo incompleto."
-                )
-
-        if isinstance(error, BackupError):
-            raise
+            os.remove(ruta_respaldo)
 
         raise BackupError(
-            f"No se pudo generar el respaldo: {error}"
-        )
+            f"No se pudo generar el respaldo: {e}"
+        ) from e
 
+    finally:
+        if destino is not None:
+            destino.close()
+
+        if origen is not None:
+            origen.close()
+            
 
 def iniciar_respaldos_diarios(ruta_bd="tienda.db",
                               carpeta_destino="backups",
