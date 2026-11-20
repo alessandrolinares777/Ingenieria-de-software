@@ -635,7 +635,7 @@ class TestSincronizacion(BaseTest):
                 argumentos.kwargs["trigger"], "interval"
             )
             self.assertEqual(
-                argumentos.kwargs["hours"], 1
+                argumentos.kwargs["minutes"], 5
             )
             self.assertEqual(
                 argumentos.kwargs["id"],
