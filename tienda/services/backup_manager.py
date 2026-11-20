@@ -67,10 +67,10 @@ def generar_respaldo(ruta_bd="tienda.db", carpeta_destino="backups"):
 
 def iniciar_respaldos_diarios(ruta_bd="tienda.db",
                               carpeta_destino="backups",
-                              hora=23, minuto=59):
+                              hora=2, minuto=0):
     """
     Programa un respaldo automático todos los días.
-    Por defecto se ejecuta a las 23:59.
+    Por defecto se ejecuta a las 2:00.
     """
 
     from apscheduler.schedulers.background import BackgroundScheduler

@@ -96,7 +96,7 @@ def sincronizar_precios(conn, usuario, lista_precios):
 def iniciar_sincronizacion(obtener_precios, obtener_conexion,
                            obtener_usuario):
     """
-    Programa la sincronización automática cada hora.
+    Programa la sincronización automática cada 5 minutos.
 
     obtener_precios: consulta el servidor central.
     obtener_conexion: devuelve una conexión SQLite nueva.
@@ -139,7 +139,7 @@ def iniciar_sincronizacion(obtener_precios, obtener_conexion,
     scheduler.add_job(
         tarea,
         trigger="interval",
-        hours=1,
+        minutes=5,
         id="sincronizacion_precios",
         replace_existing=True,
         max_instances=1,
