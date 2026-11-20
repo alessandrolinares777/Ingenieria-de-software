@@ -1,115 +1,243 @@
-"""Validación de códigos y carga masiva de productos."""
 
-import csv
+"""Gestión de productos y validación de códigos de barras."""
 
 from database.db import transaccion
 from services.auth_service import requiere_rol
 
 
 class ProductoError(Exception):
-    """Error relacionado con los productos."""
+    """Error relacionado con la gestión de productos."""
 
 
-def validar_codigo_unico(conn, codigo_barras):
+def validar_codigo_unico(conn, codigo_barras, producto_id=None):
     """
     Comprueba que el código de barras no esté registrado.
-    Retorna True si está disponible y False si ya existe.
+
+    producto_id permite excluir el producto actual
+    cuando se está modificando su información.
+
+    Retorna True si el código está disponible.
     """
+
+    if codigo_barras is None:
+        raise ProductoError("El código de barras es obligatorio.")
+
     codigo_barras = str(codigo_barras).strip()
 
     if not codigo_barras:
         raise ProductoError("El código de barras no puede estar vacío.")
 
-    resultado = conn.execute(
-        "SELECT id FROM productos WHERE codigo_barras = ?",
-        (codigo_barras,)
-    ).fetchone()
+    consulta = """
+        SELECT id
+        FROM productos
+        WHERE codigo_barras = ?
+    """
+
+    parametros = [codigo_barras]
+
+    if producto_id is not None:
+        consulta += " AND id != ?"
+        parametros.append(producto_id)
+
+    resultado = conn.execute(consulta, parametros).fetchone()
 
     return resultado is None
 
 
-def cargar_inventario_masivo(conn, usuario, ruta_csv):
+def crear_producto(conn, usuario, codigo_barras, nombre,
+                   categoria, precio, stock_minimo=5):
     """
-    Importa productos desde un archivo CSV.
-    Solo puede ejecutarlo el administrador o el encargado de inventario.
+    Registra un producto nuevo.
 
-    Columnas requeridas:
-    codigo_barras,nombre,categoria,precio,stock,stock_minimo
+    Solamente pueden realizar esta operación:
+    - Administrador.
+    - Encargado de inventario.
+
+    El stock inicial es cero. Las existencias se gestionan
+    mediante el módulo de inventario.
     """
-    requiere_rol(usuario, "administrador", "encargado_inventario")
 
-    productos = []
+    requiere_rol(
+        usuario,
+        "administrador",
+        "encargado_inventario"
+    )
 
-    try:
-        with open(ruta_csv, "r", encoding="utf-8-sig", newline="") as archivo:
-            lector = csv.DictReader(archivo)
+    codigo_barras = str(codigo_barras).strip()
+    nombre = nombre.strip()
 
-            columnas = {
-                "codigo_barras", "nombre", "categoria",
-                "precio", "stock", "stock_minimo"
-            }
+    if not nombre:
+        raise ProductoError("El nombre es obligatorio.")
 
-            if not lector.fieldnames or not columnas.issubset(lector.fieldnames):
-                raise ProductoError("El CSV no contiene todas las columnas requeridas.")
+    if not validar_codigo_unico(conn, codigo_barras):
+        raise ProductoError("El código de barras ya está registrado.")
 
-            for numero, fila in enumerate(lector, start=2):
-                codigo = fila["codigo_barras"].strip()
-                nombre = fila["nombre"].strip()
-                categoria = fila["categoria"].strip()
+    if precio < 0:
+        raise ProductoError("El precio no puede ser negativo.")
 
-                if not codigo or not nombre:
-                    raise ProductoError(
-                        f"Falta el código o nombre del producto en la fila {numero}."
-                    )
-
-                try:
-                    precio = float(fila["precio"])
-                    stock = int(fila["stock"])
-                    stock_minimo = int(fila["stock_minimo"])
-                except (ValueError, TypeError):
-                    raise ProductoError(
-                        f"Precio o existencias inválidas en la fila {numero}."
-                    )
-
-                if precio < 0 or stock < 0 or stock_minimo < 0:
-                    raise ProductoError(
-                        f"Hay valores negativos en la fila {numero}."
-                    )
-
-                productos.append(
-                    (codigo, nombre, categoria, precio, stock, stock_minimo)
-                )
-
-    except FileNotFoundError:
-        raise ProductoError("No se encontró el archivo CSV.")
-
-    if not productos:
-        raise ProductoError("El archivo no contiene productos.")
-
-    codigos = [p[0] for p in productos]
-
-    if len(codigos) != len(set(codigos)):
-        raise ProductoError("El archivo contiene códigos de barras repetidos.")
-
-    insertados = 0
+    if stock_minimo < 0:
+        raise ProductoError("El stock mínimo no puede ser negativo.")
 
     with transaccion(conn):
-        for codigo, nombre, categoria, precio, stock, stock_minimo in productos:
 
-            if not validar_codigo_unico(conn, codigo):
-                raise ProductoError(
-                    f"El código de barras {codigo} ya está registrado."
-                )
-
-            conn.execute(
-                """
-                INSERT INTO productos
-                (codigo_barras, nombre, categoria, precio, stock, stock_minimo)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (codigo, nombre, categoria, precio, stock, stock_minimo)
+        cursor = conn.execute(
+            """
+            INSERT INTO productos
+            (codigo_barras, nombre, categoria, precio,
+             stock, stock_minimo)
+            VALUES (?, ?, ?, ?, 0, ?)
+            """,
+            (
+                codigo_barras,
+                nombre,
+                categoria,
+                precio,
+                stock_minimo
             )
+        )
 
-            insertados += 1
+        return cursor.lastrowid
 
-    return insertados
+
+def obtener_producto(conn, producto_id):
+    """
+    Obtiene un producto mediante su identificador.
+    Retorna None si no existe.
+    """
+
+    producto = conn.execute(
+        """
+        SELECT *
+        FROM productos
+        WHERE id = ?
+        """,
+        (producto_id,)
+    ).fetchone()
+
+    return producto
+
+
+def listar_productos(conn, incluir_inactivos=False):
+    """
+    Retorna todos los productos registrados.
+
+    Por defecto solamente muestra productos activos.
+    """
+
+    if incluir_inactivos:
+        consulta = """
+            SELECT *
+            FROM productos
+            ORDER BY nombre
+        """
+        return conn.execute(consulta).fetchall()
+
+    consulta = """
+        SELECT *
+        FROM productos
+        WHERE activo = 1
+        ORDER BY nombre
+    """
+
+    return conn.execute(consulta).fetchall()
+
+
+def modificar_producto(conn, usuario, producto_id,
+                       codigo_barras, nombre, categoria,
+                       stock_minimo, precio=None):
+    """
+    Modifica la información de un producto.
+
+    El precio es opcional:
+    - Si no se proporciona, conserva el precio actual.
+    - Si se proporciona, solamente administrador o encargado
+      de inventario pueden modificarlo.
+
+    El stock no se modifica aquí, ya que corresponde
+    al módulo de inventario.
+    """
+
+    requiere_rol(
+        usuario,
+        "administrador",
+        "encargado_inventario"
+    )
+
+    producto = obtener_producto(conn, producto_id)
+
+    if producto is None:
+        raise ProductoError("El producto no existe.")
+
+    if not producto["activo"]:
+        raise ProductoError("No se puede modificar un producto inactivo.")
+
+    nombre = nombre.strip()
+
+    if not nombre:
+        raise ProductoError("El nombre es obligatorio.")
+
+    if not validar_codigo_unico(conn, codigo_barras, producto_id):
+        raise ProductoError("El código de barras ya está registrado.")
+
+    if stock_minimo < 0:
+        raise ProductoError("El stock mínimo no puede ser negativo.")
+
+    if precio is not None and precio < 0:
+        raise ProductoError("El precio no puede ser negativo.")
+
+    if precio is None:
+        precio = producto["precio"]
+
+    with transaccion(conn):
+
+        conn.execute(
+            """
+            UPDATE productos
+            SET codigo_barras = ?,
+                nombre = ?,
+                categoria = ?,
+                precio = ?,
+                stock_minimo = ?
+            WHERE id = ?
+            """,
+            (
+                codigo_barras,
+                nombre,
+                categoria,
+                precio,
+                stock_minimo,
+                producto_id
+            )
+        )
+
+    return True
+
+
+def desactivar_producto(conn, usuario, producto_id):
+    """
+    Desactiva un producto sin eliminarlo de la base de datos.
+    Solamente puede hacerlo el administrador.
+    """
+
+    requiere_rol(usuario, "administrador")
+
+    producto = obtener_producto(conn, producto_id)
+
+    if producto is None:
+        raise ProductoError("El producto no existe.")
+
+    if not producto["activo"]:
+        raise ProductoError("El producto ya está desactivado.")
+
+    with transaccion(conn):
+
+        conn.execute(
+            """
+            UPDATE productos
+            SET activo = 0
+            WHERE id = ?
+            """,
+            (producto_id,)
+        )
+
+    return True
