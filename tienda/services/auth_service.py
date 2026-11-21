@@ -26,8 +26,8 @@ def crear_usuario(conn, codigo, nombre, password, rol):
     """Registra un usuario nuevo. Lo invoca el administrador."""
     if rol not in ROLES:
         raise ValueError(f"Rol inválido: {rol}")
-    if len(password) < 6:
-        raise ValueError("La contraseña debe tener al menos 6 caracteres.")
+    if len(password) < 3:
+        raise ValueError("La contraseña debe tener al menos 3 caracteres.")
     h, s = hash_password(password)
     conn.execute(
         "INSERT INTO usuarios (codigo, nombre, password_hash, salt, rol) VALUES (?,?,?,?,?)",
